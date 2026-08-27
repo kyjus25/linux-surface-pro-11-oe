@@ -69,62 +69,52 @@ install -m 0755 "$repo_dir/scripts/troubleshoot-sp11-bluetooth.sh" "$(target /us
 install -m 0755 "$repo_dir/scripts/troubleshoot-sp11-wifi-rfkill.sh" "$(target /usr/local/sbin/troubleshoot-sp11-wifi-rfkill)"
 install -m 0755 "$repo_dir/scripts/install-sp11-touchscreen.sh" "$(target /usr/local/sbin/install-sp11-touchscreen)"
 install -m 0755 "$repo_dir/scripts/troubleshoot-sp11-touchscreen.sh" "$(target /usr/local/sbin/troubleshoot-sp11-touchscreen)"
-install -m 0755 "$repo_dir/scripts/sp11-pipewire-speaker-sink.sh" "$(target /usr/local/sbin/sp11-pipewire-speaker-sink)"
-install -m 0755 "$repo_dir/scripts/sp11-audio-topology.sh" "$(target /usr/local/sbin/sp11-audio-topology)"
-install -m 0755 "$repo_dir/scripts/sp11-enable-wsa-routing.sh" "$(target /usr/local/sbin/sp11-enable-wsa-routing.sh)"
-# Remove the mismatched name emitted by the previous main installer.
-rm -f "$(target /usr/local/sbin/sp11-enable-wsa-routing)"
-install -m 0755 "$repo_dir/scripts/sp11-fix-audio-boot-race.sh" "$(target /usr/local/sbin/sp11-fix-audio-boot-race)"
+# The CRD-topology workaround stack (manual PipeWire speaker sink, CRD
+# topology installer, WSA routing probe, boot-race fixer) is retired: the
+# paired audio releases described in ADR0064 own the topology, UCM, and
+# speaker graph.  Do not install their helpers; remove copies left by
+# earlier installer runs so a re-run converges on the native pairing
+# instead of reviving the workaround.
+for legacy_helper in \
+  sp11-pipewire-speaker-sink \
+  sp11-audio-topology \
+  sp11-enable-wsa-routing \
+  sp11-enable-wsa-routing.sh \
+  sp11-fix-audio-boot-race; do
+  rm -f "$(target "/usr/local/sbin/$legacy_helper")"
+done
 
-# --- Audio routing and graph/path exercise service ---
-# The service runs after any ALSA-state restore, waits for the late-probing
-# card, applies the complete WSA path while PCM1 is closed, and exercises it
-# with a real PCM open.  Do not rewrite asound.state or mask distro services:
-# 0x1001021 is an SPF readiness query, not evidence of an alsactl graph race.
-if [ -f "$repo_dir/scripts/systemd/sp11-wsa-routing.service" ]; then
-  install -d "$(target /etc/systemd/system)"
-  install -m 0644 "$repo_dir/scripts/systemd/sp11-wsa-routing.service" \
-    "$(target /etc/systemd/system/sp11-wsa-routing.service)"
-
-  if [ "$ROOT" = "/" ]; then
-    # Releases before the corrected GET_SPF_STATE diagnosis masked these.
-    # Restore the distribution units before adding After= ordering on them.
-    systemctl unmask alsa-restore.service alsa-state.service 2>/dev/null || true
-    systemctl daemon-reload
-    systemctl enable sp11-wsa-routing.service 2>/dev/null || true
-  else
-    # For an offline root, remove only the exact masks created by old builds.
-    for alsa_unit in alsa-restore.service alsa-state.service; do
-      alsa_unit_path="$(target "/etc/systemd/system/$alsa_unit")"
-      if [ -L "$alsa_unit_path" ] && [ "$(readlink "$alsa_unit_path")" = /dev/null ]; then
-        rm -f "$alsa_unit_path"
-      fi
-    done
-    # Enable via symlink (will be picked up after chroot boot)
-    install -d "$(target /etc/systemd/system/multi-user.target.wants)"
-    ln -sf /etc/systemd/system/sp11-wsa-routing.service \
-      "$(target /etc/systemd/system/multi-user.target.wants/sp11-wsa-routing.service)" 2>/dev/null || true
+# --- Retired WSA routing service ---
+# The legacy service applies CRD-era WSA routes and opens PCM1 at every
+# boot, which conflicts with the paired topology/UCM that now owns the
+# speaker graph.  Retire it on systems where an earlier installer enabled
+# it, and restore the distribution ALSA-state units old releases masked;
+# the native pairing also relies on those units staying unmasked.
+if [ "$ROOT" = "/" ]; then
+  if systemctl is-enabled sp11-wsa-routing.service >/dev/null 2>&1 || \
+     systemctl is-active sp11-wsa-routing.service >/dev/null 2>&1; then
+    systemctl disable --now sp11-wsa-routing.service 2>/dev/null || true
   fi
+  systemctl unmask alsa-restore.service alsa-state.service 2>/dev/null || true
+else
+  # For an offline root, remove only the exact masks created by old builds.
+  for alsa_unit in alsa-restore.service alsa-state.service; do
+    alsa_unit_path="$(target "/etc/systemd/system/$alsa_unit")"
+    if [ -L "$alsa_unit_path" ] && [ "$(readlink "$alsa_unit_path")" = /dev/null ]; then
+      rm -f "$alsa_unit_path"
+    fi
+  done
+fi
+rm -f "$(target /etc/systemd/system/sp11-wsa-routing.service)" \
+  "$(target /etc/systemd/system/multi-user.target.wants/sp11-wsa-routing.service)"
+if [ "$ROOT" = "/" ]; then
+  systemctl daemon-reload
 fi
 
 # --- Audio topology & UCM ---
-AUDIO_ASSETS_DIR="$repo_dir/payload/audio"
-if [ -f "$AUDIO_ASSETS_DIR/X1E80100-Microsoft-Surface-Pro-11-tplg.bin" ]; then
-  install -m 0644 "$AUDIO_ASSETS_DIR/X1E80100-Microsoft-Surface-Pro-11-tplg.bin" \
-    "$(target /lib/firmware/qcom/x1e80100/X1E80100-Microsoft-Surface-Pro-11-tplg.bin)"
-fi
-if [ -f "$AUDIO_ASSETS_DIR/MICROSOFT-Surface-Pro-11.conf" ]; then
-  install -m 0644 "$AUDIO_ASSETS_DIR/MICROSOFT-Surface-Pro-11.conf" \
-    "$(target /usr/share/alsa/ucm2/Qualcomm/x1e80100/MICROSOFT-Surface-Pro-11.conf)"
-fi
-if [ -f "$AUDIO_ASSETS_DIR/Surface11-HiFi.conf" ]; then
-  install -m 0644 "$AUDIO_ASSETS_DIR/Surface11-HiFi.conf" \
-    "$(target /usr/share/alsa/ucm2/Qualcomm/x1e80100/Surface11-HiFi.conf)"
-fi
-if [ -f "$AUDIO_ASSETS_DIR/x1e80100.conf" ]; then
-  install -m 0644 "$AUDIO_ASSETS_DIR/x1e80100.conf" \
-    "$(target /usr/share/alsa/ucm2/conf.d/x1e80100/x1e80100.conf)"
-fi
+# Deliberately not installed here.  Per ADR0064 the kernel packages and the
+# dedicated audio release must be installed together, and the topology and
+# UCM ship only through the paired sp11-audio release.
 
 cat > "$(target /usr/local/sbin/sp11-grub-inject-dtb)" <<'EOF'
 #!/usr/bin/env bash
