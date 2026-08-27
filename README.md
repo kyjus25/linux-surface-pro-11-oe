@@ -50,8 +50,8 @@ list for the upstream Arch status.
 | USB-C boot | ✅ Working with `--grub-mode direct` | The normal GRUB menu can display entries but input and timeout are unreliable. Use `--grub-mode direct` for the verified live-USB path. |
 | Wi-Fi | ✅ Working | WCN7850/Qualcomm FastConnect 7800 binds to `ath12k_wifi7_pci`, loads firmware, scans, reconnects to a saved network after reboot, and passes traffic on patched git-fallback `7.0.0-22-qcom-x1e` plus an rfkill-capable Denali DTB. Stock/upgraded `7.0.0-32-qcom-x1e` remained hard-blocked. Uses a [kernel hack to disable rfkill](https://github.com/dwhinham/kernel-surface-pro-11/commit/fcc769be9eaa9823d55e98a28402104621fa6784). Continue validating normal reboots, suspend/resume, and package upgrades. |
 | Bluetooth | ✅ Working | Public address set via raw `AF_BLUETOOTH` socket C helper (`tools/sp11-bt-set-addr.c`) before `bluetooth.service` starts, avoiding the btmgmt D-state hang. Cold boot service succeeds at T+1s. Pairing, audio, and suspend/resume still need validation. See [how-to-bring-up-bluetooth](docs/how-to/how-to-bring-up-bluetooth.md). |
-| Audio — speakers | ✅ Working on installed v6 kernel | Both physical speakers receive the stereo mix through a PipeWire manual sink with reordered `audio.position` labels — the 4-channel PCM is a transport layout mapping physical slots 0 and 2, not a DAPM bypass ([ADR-0036](docs/adr/adr-0036-right-speaker-audio-position-reorder.md)). The rc6 integration kernel (`7.2-rc6-jg-0sp11v6`) carries the wsa884x 2S/4-ohm PA-recovery profile, which fixes the left-speaker audio wedge at sustained full volume ([ADR-0057](docs/adr/adr-0057-sp11-7-2-rc6-jg-0sp11v6-rc-branch-build.md), [ADR-0056](docs/adr/adr-0056-sp11-7-2-rc5-jg-0sp11v6-integration-build.md)). `sp11-wsa-routing.service` applies the WSA path with PCM1 closed and exercises a fresh graph at boot, replacing the superseded alsactl boot-race fix ([ADR-0035](docs/adr/adr-0035-audio-boot-race-alsactl.md)). PA Volume is capped at raw 6 (0 dB) and the digital volumes at 81 (−3 dB) by the machine driver; the volume-slider taper is stock cubic, with a log-dB taper accepted but not yet implemented ([ADR-0055](docs/adr/adr-0055-audio-volume-taper-log-db.md)). See [`how-to-bring-up-audio`](docs/how-to/how-to-bring-up-audio.md). |
-| Audio — microphone | ✅ Working with 2.4 MHz DMIC clock | The corrected single-WSA-macro UCM profile exposes two-channel internal microphone capture, and Surface-specific unity gain avoids the shared +16 dB default clipping. Setting the Denali DMIC clock to 2.4 MHz eliminates the continuous feedback/static heard at 4.8 MHz and makes recorded speech dramatically clearer. Capture remains slightly tinny or thin. See [ADR-0044](docs/adr/adr-0044-sp11-ucm-single-wsa-macro-microphone.md) and [ADR-0046](docs/adr/adr-0046-sp11-default-2p4mhz-dmic-clock.md). |
+| Audio — speakers | ✅ Working on the native v19c pairing | WirePlumber creates the native sink from the paired FullIO v19c topology and UCM ([ADR0064](docs/adr/adr-0064-sp11-audio-release-strategy.md)): correct stereo mapping and VI+CPS speaker-protection feedback, with no manual PipeWire sink and no boot-time routing service. The CRD workaround stack (manual speaker sink, CRD topology, `sp11-wsa-routing.service`) is retired; the support installer removes leftovers, and the legacy `50-sp11-speakers.conf` sink is fatal on this pairing (PipeWire crash loop). The wsa884x 2S/4-ohm PA-recovery profile from the integration kernel line fixes the left-speaker audio wedge at sustained full volume ([ADR-0057](docs/adr/adr-0057-sp11-7-2-rc6-jg-0sp11v6-rc-branch-build.md), [ADR-0056](docs/adr/adr-0056-sp11-7-2-rc5-jg-0sp11v6-integration-build.md)). See [`how-to-bring-up-audio`](docs/how-to/how-to-bring-up-audio.md). |
+| Audio — microphone | ✅ Working on the native v19c pairing | The paired UCM's `HiFi` verb exposes the internal microphone again on the geocausa v12 + FullIO v19c pairing (mic support from [linux_ms_dev_kit-sp11 PR #21](https://github.com/ooaklee/linux_ms_dev_kit-sp11/pull/21)); the v9/v10 Golden v32 line defined no VA/DMIC capture graph ([ADR-0062](docs/adr/adr-0062-sp11-7-2-0-jg-0sp11v9-golden-v32-audio-line.md), [issue #48](https://github.com/ooaklee/linux-surface-pro-11-oe/issues/48)). Surface-specific unity decoder gain avoids the shared +16 dB default clipping, and the 2.4 MHz DMIC clock eliminates the continuous feedback/static heard at 4.8 MHz; capture remains slightly tinny or thin. See [ADR-0044](docs/adr/adr-0044-sp11-ucm-single-wsa-macro-microphone.md), [ADR-0046](docs/adr/adr-0046-sp11-default-2p4mhz-dmic-clock.md), and [ADR0064](docs/adr/adr-0064-sp11-audio-release-strategy.md). |
 | Touchscreen | ✅ Working on installed v6 system | MSHW0485 G6 touchscreen over SE2 QSPI (`spi@a88000`) with GPI DMA, now carried **in-tree** on the 7.2-rc6 build (`7.2-rc6-jg-0sp11v6`) as the phase55 `mshw0485_touch`, `spi-geni-qcom`, and `gpi` drivers — no out-of-tree module install. Multi-touch, pinch/zoom, and three-finger gestures work, and sound is verified on the same build. Supersedes the v3 geocausa OOT-module approach. See [ADR-0054](docs/adr/adr-0054-sp11-7-2-rc5-jg-0sp11v4-intree-touchscreen-build.md) and [ADR-0049](docs/adr/adr-0049-sp11-7-2-rc5-jg-0sp11v3-touchscreen-build.md). |
 | Pen | ❌ Not working | Not working in live USB. Upstream Arch notes also list pen as not working. |
 | Touchpad | ✅ Working | Type Cover touchpad works after the kernel loads `i2c-hid-of` and the `gpio` keys. Hot-plug may need re-binding. |
@@ -388,56 +388,70 @@ D-state hang. See [ADR-0032](docs/adr/adr-0032-raw-mgmt-socket-bluetooth-cold-bo
 
 ### Audio
 
+Audio ships as two paired, immutable releases: the kernel bundle and the
+matching `sp11-audio` topology + UCM release
+([ADR0064](docs/adr/adr-0064-sp11-audio-release-strategy.md)). Installing
+only the kernel is not sufficient — the AudioReach DSP loads the topology
+when the sound card probes at boot, and the UCM files provide the speaker,
+microphone, and volume routes. The kernel release notes always name the
+compatible audio release.
+
+Check the current state first:
+
 ```bash
 cd "$SP11DATA/support"
 sudo ./scripts/troubleshoot-sp11-audio.sh
 ```
 
-Install the audio support (UCM profiles, probe-backed routing service, and
-GRUB DTB injection), then add the user-level PipeWire speaker sink:
+Download the paired audio release (this example: FullIO v19c, paired with
+the geocausa v12 kernel), verify its hashes, and install the four files:
 
 ```bash
-cd "$SP11DATA/support"
-sudo ./scripts/install-sp11-support.sh
-./scripts/sp11-pipewire-speaker-sink.sh --install
+base=https://github.com/ooaklee/linux-surface-pro-11-oe/releases/download/sp11-audio-v19c
+for f in SHA256SUMS X1E80100-Microsoft-Surface-Pro-11-tplg.bin \
+         MICROSOFT-Surface-Pro-11in.conf SP11-HiFi.conf x1e80100.conf; do
+  curl -fsLO "$base/$f"
+done
+sha256sum -c SHA256SUMS
+sudo install -Dm0644 X1E80100-Microsoft-Surface-Pro-11-tplg.bin \
+  /lib/firmware/qcom/x1e80100/X1E80100-Microsoft-Surface-Pro-11-tplg.bin
+sudo install -Dm0644 MICROSOFT-Surface-Pro-11in.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/MICROSOFT-Surface-Pro-11in.conf
+sudo install -Dm0644 SP11-HiFi.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/SP11-HiFi.conf
+sudo install -Dm0644 x1e80100.conf \
+  /usr/share/alsa/ucm2/conf.d/x1e80100/x1e80100.conf
 sudo reboot
 ```
 
-`sp11-wsa-routing.service` applies the WSA speaker route while PCM1 is closed
-and exercises a fresh AudioReach graph before the display manager starts. It
-runs after any ALSA-state restore; the distribution ALSA services must not be
-masked (the earlier alsactl boot-race diagnosis was superseded — see
-[ADR-0035](docs/adr/adr-0035-audio-boot-race-alsactl.md)).
+The support installer (`install-sp11-support.sh`) installs no audio payload
+and retires the CRD-era workaround stack (WSA routing service, manual
+PipeWire speaker sink, topology builder) left behind by older runs. Do not
+recreate those workarounds: the legacy `50-sp11-speakers.conf` sink is
+fatal on the native pairing (PipeWire exits with status 234 in a crash
+loop), and the legacy routing service fights the paired topology's
+protected speaker graph.
 
-If the topology file is missing, build and install it before running the
-support installer:
+After reboot, verify:
 
 ```bash
-cd "$SP11DATA/support"
-./scripts/sp11-audio-topology.sh
-sudo ./scripts/sp11-audio-topology.sh --install
+wpctl status                                            # real sink, not Dummy Output
+speaker-test -D default -c 2 -t sine -f 440 -s 1 -l 1   # left speaker only
+speaker-test -D default -c 2 -t sine -f 440 -s 2 -l 1   # right speaker only
+sudo dmesg | grep -Ei 'SP11 stage|SPVI|no backend' | tail -15
 ```
 
-Alternatively, download the
-[audio topology and UCM v2 release](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-audio-topology-v2).
-Pair the corrected UCM with the newest kernel bundle
-[v7 (7.2.0-jg-0sp11v7)](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-qcom-x1e-7.2.0-jg-0sp11v7),
-built from the
-[`sp11/integration-7.2.x`](https://github.com/ooaklee/linux_ms_dev_kit-sp11/tree/sp11/integration-7.2.x)
-fork: it carries the wsa884x 2S/4-ohm PA-recovery profile (no left-speaker
-audio wedge at sustained full volume), the 2.4 MHz DMIC clock, and the
-in-tree phase55 touchscreen
-([ADR-0056](docs/adr/adr-0056-sp11-7-2-rc5-jg-0sp11v6-integration-build.md)).
-The experimental
-[7.2-rc5-jg-0sp11v3 r1 kernel bundle](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-qcom-x1e-7.2-rc5-jg-0sp11v3-r1)
-and the existing
-[7.1.3-jg-1 v2 kernel](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-qcom-x1e-7.1.3-jg-1-v2)
-remain available as rollback options.
+The last check must show `SP11 stage SP/SPVI enabled with VI+CPS feedback
+accepted` and no `no backend DAIs` messages.
 
-See [`how-to-bring-up-audio`](docs/how-to/how-to-bring-up-audio.md),
-[ADR-0035](docs/adr/adr-0035-audio-boot-race-alsactl.md),
-[ADR-0036](docs/adr/adr-0036-right-speaker-audio-position-reorder.md), and
-[ADR-0055](docs/adr/adr-0055-audio-volume-taper-log-db.md) for details.
+Older audio lines remain documented for rollback and history: the Golden
+v32 v9/v10 pairing
+([`how-to-migrate-to-native-audio`](docs/how-to/how-to-migrate-to-native-audio.md),
+[ADR-0062](docs/adr/adr-0062-sp11-7-2-0-jg-0sp11v9-golden-v32-audio-line.md))
+and the retired CRD workaround stack
+([ADR-0035](docs/adr/adr-0035-audio-boot-race-alsactl.md),
+[ADR-0036](docs/adr/adr-0036-right-speaker-audio-position-reorder.md),
+[ADR-0055](docs/adr/adr-0055-audio-volume-taper-log-db.md)).
 
 ## KDE Plasma (Kubuntu-like Experience)
 
@@ -489,7 +503,7 @@ DTB, firmware, audio, or Bluetooth bring-up. See
 - [Bring Up Audio](docs/how-to/how-to-bring-up-audio.md)
 - [Compile the Raw mgmt-Socket Bluetooth Helper](docs/how-to/how-to-compile-sp11-bt-set-addr.md)
 - [Release Prebuilt Kernel Artifacts](docs/how-to/how-to-release-kernel-artifacts.md)
-- [Release Audio Topology Artifacts](scripts/prepare-sp11-audio-release-assets.sh)
+- [Publish the SP11 Audio Release](scripts/publish-sp11-audio-release.sh)
 - [Generate a Service Report](docs/how-to/how-to-generate-service-report.md)
 - [Touchscreen Clean-Install and Release Retrospective](docs/adr/adr-0050-sp11-touchscreen-clean-install-release-flow.md)
 - [Troubleshoot Docker Overlay Mount Failures on Linux Build Hosts](docs/how-to/how-to-troubleshoot-linux-docker-overlay.md)

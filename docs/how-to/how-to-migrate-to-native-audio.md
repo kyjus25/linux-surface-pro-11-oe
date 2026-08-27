@@ -7,6 +7,12 @@ description: How-to guide for migrating from the legacy OE audio workarounds (CR
 
 # How To: Migrate SP11 Audio to the Native v9+ Pairing
 
+> **Superseded for v12+.** This Golden v32 procedure applies to the
+> `7.2.0-jg-0sp11v9` and `7.2.0-jg-0sp11v10` kernels only. From the geocausa
+> v12 kernel on, install the dedicated paired audio release instead — see
+> [ADR0064](../adr/adr-0064-sp11-audio-release-strategy.md) and
+> [How To: Bring Up Audio](how-to-bring-up-audio.md).
+
 Use this procedure to replace the Surface Pro 11 legacy audio workaround stack
 with the userspace pairing required by the `7.2.0-jg-0sp11v9` and
 `7.2.0-jg-0sp11v10` kernels.

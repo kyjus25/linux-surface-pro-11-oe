@@ -1,319 +1,218 @@
-# How to Bring Up Audio on Surface Pro 11
+---
+id: how-to-bring-up-audio
+title: "How To: Bring Up Audio on Surface Pro 11"
+# prettier-ignore
+description: How-to guide for installing Surface Pro 11 audio as a paired kernel + sp11-audio release (ADR0064), migrating off the retired CRD workaround stack, validating speakers and microphone, and rolling back.
+---
 
-Last updated: 2026-08-16
+# How To: Bring Up Audio on Surface Pro 11
+
+Last updated: 2026-08-27
+
+Surface Pro 11 audio is deployed as **two paired, immutable releases**:
+
+- the kernel bundle, for example
+  [`sp11-qcom-x1e-7.2.0-jg-0sp11v12`](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-qcom-x1e-7.2.0-jg-0sp11v12);
+- the matching audio release, for example
+  [`sp11-audio-v19c`](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-audio-v19c)
+  (FullIO v19c topology + UCM).
+
+The pairing is a contract: the kernel alone is not a working audio install.
+`audioreach_tplg_init` requests `qcom/<card>-tplg.bin` when the sound card
+probes at boot, and the UCM files provide the speaker, microphone, and
+volume routes. The kernel release notes always name the compatible audio
+release. See
+[ADR0064](../adr/adr-0064-sp11-audio-release-strategy.md).
 
 ## Prerequisites
 
-- [x] SP11 kernel patched with DTB audio DAI links (`wsa-dai-link`, `va-dai-link`)
-- [x] ADSP/CDSP firmware in place (`qcadsp8380.mbn`, `qccdsp8380.mbn`)
-- [x] Audio firmware copied from Windows / linux-firmware
-- [x] WSA routing/graph probe installed (see [ADR-0035](../adr/adr-0035-audio-boot-race-alsactl.md))
+- A Surface Pro 11 running the installed Ubuntu system with the paired
+  kernel installed (see
+  [Reinstall Patched Kernel](how-to-reinstall-patched-kernel-from-usb.md)).
+- aDSP/cDSP firmware in place (one-time install; see
+  [Install Surface Pro 11 Firmware](how-to-install-sp11-firmware.md)).
+- Root access for `/lib/firmware` and `/usr/share/alsa/ucm2`.
 
-## Status (2026-08-16)
+## Procedure
 
-| Audio path | Status | Notes |
-|---|---|---|
-| Sound card (ALSA) | Working | `x1e80100` card instantiates with topology |
-| Speaker (WSA884x) | Experimental (both slots mapped) | 4-channel PCM via WSA_CODEC_DMA_RX_0. PipeWire uses `[ FL RL FR RR ]` so physical slots 0 and 2 receive the stereo mix; this is slot mapping, not a DAPM bypass. See [ADR-0036](../adr/adr-0036-right-speaker-audio-position-reorder.md). |
-| Audio graph setup | Probe-backed | `sp11-wsa-routing.service` applies the route with PCM1 closed, then exercises a fresh graph. Boot opcode `0x1001021` is only the SPF readiness query; ALSA restore services must not be masked. See [ADR-0035](../adr/adr-0035-audio-boot-race-alsactl.md). |
-| PipeWire integration | Partial | Card detected but manual sink config needed |
-| Headphone (WCD939x RX) | Untested | RX_CODEC not in current DTS DAI links |
-| Internal microphones (VA DMIC) | Working, slightly tinny | Corrected UCM opens the `Mic` device and records two-channel 48 kHz `S16_LE` audio from `hw:0,3`. Surface-specific 0 dB decoder gain avoids the clipping seen with the shared +16 dB default. The validated 2.4 MHz DMIC clock eliminates the continuous static heard at 4.8 MHz; capture remains slightly tinny or thin. See [ADR-0044](../adr/adr-0044-sp11-ucm-single-wsa-macro-microphone.md) and [ADR-0046](../adr/adr-0046-sp11-default-2p4mhz-dmic-clock.md). |
-| HDMI/DisplayPort audio | Untested | DP DAI links not in current DTS |
-| Bluetooth audio | Working | Independent of card topology |
-
-## Quick Start: Build and Install Topology
-
-### 1. Build the topology
+### 1. Download and verify the paired audio release
 
 ```bash
-./scripts/sp11-audio-topology.sh
+base=https://github.com/ooaklee/linux-surface-pro-11-oe/releases/download/sp11-audio-v19c
+for f in SHA256SUMS X1E80100-Microsoft-Surface-Pro-11-tplg.bin \
+         MICROSOFT-Surface-Pro-11in.conf SP11-HiFi.conf x1e80100.conf; do
+  curl -fsLO "$base/$f"
+done
+sha256sum -c SHA256SUMS
 ```
 
-### 2. Install (needs sudo)
+`sha256sum -c` must pass for all four installable files. If it fails,
+stop; do not install an unverified topology under the canonical firmware
+name.
+
+### 2. Back up any previous audio files
+
+Preserve the current state before overwriting anything:
 
 ```bash
-sudo ./scripts/sp11-audio-topology.sh --install
+backup=/var/backups/sp11-audio-$(date '+%Y%m%d-%H%M%S')
+sudo mkdir -p "$backup"
+for f in \
+  /lib/firmware/qcom/x1e80100/X1E80100-Microsoft-Surface-Pro-11-tplg.bin \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/MICROSOFT-Surface-Pro-11in.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/SP11-HiFi.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/Surface11-HiFi.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/MICROSOFT-Surface-Pro-11.conf \
+  /usr/share/alsa/ucm2/conf.d/x1e80100/x1e80100.conf; do
+  if [ -e "$f" ]; then
+    sudo mkdir -p "$backup$(dirname "$f")"
+    sudo cp -a "$f" "$backup$f"
+  fi
+done
 ```
 
-### 3. Reboot
-
-The topology is loaded by the AudioReach DSP at card probe time (boot). Reboot
-is required after first install.
-
-### 4. Install the WSA routing/graph probe
-
-The helper installs `sp11-wsa-routing.service`, unmasks any ALSA-state-service
-masks left by old releases, applies WSA routing while PCM1 is closed, and
-opens a short silent stream to exercise AudioReach and DAPM. See the corrected
-status in [ADR-0035](../adr/adr-0035-audio-boot-race-alsactl.md).
+### 3. Install the four files
 
 ```bash
-sudo ./scripts/sp11-fix-audio-boot-race.sh install
+sudo install -Dm0644 X1E80100-Microsoft-Surface-Pro-11-tplg.bin \
+  /lib/firmware/qcom/x1e80100/X1E80100-Microsoft-Surface-Pro-11-tplg.bin
+sudo install -Dm0644 MICROSOFT-Surface-Pro-11in.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/MICROSOFT-Surface-Pro-11in.conf
+sudo install -Dm0644 SP11-HiFi.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/SP11-HiFi.conf
+sudo install -Dm0644 x1e80100.conf \
+  /usr/share/alsa/ucm2/conf.d/x1e80100/x1e80100.conf
+```
+
+If a legacy `Surface11-HiFi.conf` exists, overwrite it with the new
+`SP11-HiFi.conf` content so a stale copy can never load:
+
+```bash
+sudo install -m0644 SP11-HiFi.conf \
+  /usr/share/alsa/ucm2/Qualcomm/x1e80100/Surface11-HiFi.conf
+```
+
+### 4. Retire the CRD-era workaround stack (older installs only)
+
+Installs that predate the native pairing may still carry the retired CRD
+workaround stack. It must not run alongside the paired topology:
+
+```bash
+rm -f ~/.config/pipewire/pipewire.conf.d/50-sp11-*.conf
+rm -f ~/.config/wireplumber/wireplumber.conf.d/51-sp11-*.conf
+sudo systemctl disable --now sp11-wsa-routing.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/sp11-wsa-routing.service \
+  /etc/systemd/system/multi-user.target.wants/sp11-wsa-routing.service
+sudo systemctl daemon-reload
+```
+
+The legacy `50-sp11-speakers.conf` sink is fatal on the native pairing:
+its target PCM does not exist under the paired topology, so PipeWire exits
+with status 234 and crash-loops. The legacy routing service applies
+CRD-era mixer routes and opens PCM1 at every boot, fighting the protected
+speaker graph.
+
+### 5. Reboot
+
+```bash
 sudo reboot
 ```
 
-After reboot, verify the service's own probe and graph lifecycle:
+The topology is loaded by the AudioReach DSP when the sound card probes at
+boot. A reboot is required after every topology change, even if PipeWire
+restarts cleanly.
+
+## Validation
 
 ```bash
-# 1001021 is GET_SPF_STATE and is not a playback-graph failure.
-# The service should produce no new 1001000..1001006 errors.
-journalctl -k -b | grep -E '100100[0-6]|qcom-apm'
-
-# Should show no Bus clash
-journalctl -k -b | grep 'Bus clash'
-
-# The WSA routing service should be active
-systemctl status sp11-wsa-routing.service
+uname -r                 # the paired kernel release
+wpctl status             # a real sink, not Dummy Output
+speaker-test -D default -c 2 -t sine -f 440 -s 1 -l 1   # left speaker only
+speaker-test -D default -c 2 -t sine -f 440 -s 2 -l 1   # right speaker only
+sudo dmesg | grep -Ei 'SP11 stage|SPVI|no backend' | tail -15
 ```
 
-### 5. Test with ALSA directly
+The dmesg check must include `SP11 stage SP/SPVI enabled with VI+CPS
+feedback accepted` and no `no backend DAIs` messages.
+
+Confirm the feedback-port Offset2 boot parameter reached the kernel (it
+prevents volume-change pops):
 
 ```bash
-# Check card appeared
-cat /proc/asound/cards
-aplay -l
-
-# Close every PCM holder, apply the complete route, and exercise a fresh graph.
-systemctl --user stop wireplumber.service pipewire-pulse.service \
-  pipewire-pulse.socket pipewire.service pipewire.socket
-SP11_MAX_RETRIES=2 ./scripts/sp11-enable-wsa-routing.sh
-
-# Low-level tests of physical slots 0 and 2.
-speaker-test -D hw:X1E80100Microso,1 -c 4 -r 48000 -F S16_LE \
-  -t sine -f 440 -S 10 -s 1 -l 1
-speaker-test -D hw:X1E80100Microso,1 -c 4 -r 48000 -F S16_LE \
-  -t sine -f 440 -S 10 -s 3 -l 1
-
-systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service
+grep -o 'soundwire_qcom[^ ]*' /proc/cmdline
+cat /sys/module/soundwire_qcom/parameters/sp11_feedback_active_offset2_zero   # expect Y
 ```
 
-**SAFETY**: Keep volume low (`SpkrLeft PA Volume`, `SpkrRight PA Volume`). The
-machine driver limits these to raw 6/31 (0 dB at index 6), but verify with:
-
-```bash
-amixer -c0 cget numid=1   # SpkrLeft PA Volume
-amixer -c0 cget numid=9   # SpkrRight PA Volume
-```
-
-### 6. PipeWire workaround
-
-If PipeWire shows only `Dummy Output` after reboot, install the user-level
-manual speaker sink:
-
-```bash
-./scripts/sp11-pipewire-speaker-sink.sh --install --enable-route
-wpctl status
-./scripts/troubleshoot-sp11-audio.sh > sp11-audio-after-manual-sink.txt
-```
-
-This writes
-`~/.config/pipewire/pipewire.conf.d/50-sp11-speakers.conf`, wraps the verified
-ALSA speaker PCM (`hw:X1E80100Microso,1`), applies a channelmix matrix that
-sums stereo onto physical slots 0 and 2, and restarts the user PipeWire
-services. This fixes userspace slot assignment; it does not bypass DAPM or
-prove that either amplifier is acoustically healthy. It is a stop-gap, not
-the final UCM fix. Remove it with:
-
-```bash
-./scripts/sp11-pipewire-speaker-sink.sh --remove
-```
-
-## How It Works
-
-### The Missing File
-
-The X1E80100 AudioReach DSP requires a *topology graph* (`.tplg.bin`) that
-describes the audio routing between frontend PCMs (MultiMedia1-6) and backend
-DAIs (WSA_CODEC_DMA_RX_0, VA_CODEC_DMA_TX_0, etc.).
-
-The file name is constructed as:
-
-```
-qcom/{driver_name}/{card_name}-tplg.bin
-```
-
-For Surface Pro 11:
-- `driver_name` = `x1e80100` (from machine driver)
-- `card_name` = `X1E80100-Microsoft-Surface-Pro-11` (from DTS `model` property)
-
-Result: `qcom/x1e80100/X1E80100-Microsoft-Surface-Pro-11-tplg.bin`
-
-### Topology Generation
-
-The topology is built from the `X1E80100-CRD.m4` template in
-[linux-msm/audioreach-topology](https://github.com/linux-msm/audioreach-topology):
-
-1. `m4` macro processor expands the `.m4` template → `.conf` text description
-2. `alsatplg` (from alsa-utils) compiles `.conf` → `.tplg.bin` binary topology
-
-The CRD template is the same source used for 10+ other X1E80100 devices
-including Romulus (Surface Laptop 7). It provides:
-- WSA_CODEC_DMA_RX_0 (4-channel: woofer + tweeter per channel)
-- VA_CODEC_DMA_TX_0 (voice-activation microphone array)
-- TX_CODEC_DMA_TX_3 (WCD939x headset mic — unused by current DTS)
-- RX_CODEC_DMA_RX_0 (WCD939x headphone — unused by current DTS)
-- DISPLAY_PORT_RX_0-7 (HDMI/DP audio — unused by current DTS)
-
-### ALSA UCM Integration
-
-The UCM profile (`/usr/share/alsa/ucm2/`) is configured via DMI-based regex
-matching in `conf.d/x1e80100/x1e80100.conf`. The Surface Pro 11 DMI string
-(`Microsoft Corporation-Surface-Microsoft Surface Pro, 11th Edition`) is matched
-and loads the Surface-specific UCM config.
-
-The Surface-specific profile must reference only the single WSA macro exposed
-by the card. Older copies also enabled `Wsa2Speaker*` sequences; UCM aborted on
-the missing `WSA2` controls before it could expose either `Speaker` or `Mic`.
-The corrected profile removes those invalid sequences and declares two capture
-channels. See [ADR-0044](../adr/adr-0044-sp11-ucm-single-wsa-macro-microphone.md).
-
-The manual speaker sink remains necessary for the verified channel-position
-workaround. It bypasses ACP/UCM for playback and opens the speaker PCM directly.
-
-## Troubleshooting
-
-### Card not appearing in /proc/asound/cards
-
-```bash
-dmesg | grep -i 'tplg\|snd-x1e'
-# Expected: no topology load error
-# If error: verify topology file exists at /lib/firmware/qcom/x1e80100/
-```
-
-### speaker-test fails with "Invalid argument"
-
-```bash
-# Check if DSP mixer route is enabled
-amixer -c0 cget numid=68
-# If "values=off", enable it:
-amixer -c0 cset numid=68 'on'
-```
-
-### WSA warning in dmesg
-
-```
-wsa_macro 6b00000.codec: using zero-initialized flat cache
-```
-
-This warning is on the active WSA macro (6b00000, prefix `WSA`) that drives
-the SoundWire bus. It indicates that the regmap cache began zero-initialized,
-but does not by itself prove an open-graph or amplifier failure. The
-`audio.position` reorder maps PipeWire onto physical PCM slots 0 and 2; it is
-not a DAPM workaround. See [ADR-0034](../adr/adr-0034-wsa2-regcache-right-speaker.md)
-and [ADR-0036](../adr/adr-0036-right-speaker-audio-position-reorder.md).
-
-### No sound from speakers
-
-1. Stop PipeWire services and activation sockets, then run
-   `SP11_MAX_RETRIES=2 ./scripts/sp11-enable-wsa-routing.sh`.
-2. Check mixer levels: `amixer -c0 contents | grep -A2 'PA Volume'`.
-3. Test `hw:X1E80100Microso,1` as four-channel S16_LE/48 kHz; slots 1 and 3
-   in `speaker-test -s` correspond to physical PCM slots 0 and 2.
-4. If the probe reports RUNNING plus both WSA DAPM endpoints but the tone is
-   still silent, investigate WSA884x PA state/profile; do not infer another
-   graph-open failure from boot opcode `0x1001021`.
-
-### UCM exposes no microphone source
-
-Check whether the `HiFi` verb opens and lists both devices:
+For the internal microphone, check that the `HiFi` verb exposes `Speaker`
+and `Mic`:
 
 ```bash
 alsaucm -c hw:0 set _verb HiFi list _devices
+wpctl status | grep -A6 Sources
 ```
 
-If this fails on a control beginning with `WSA2`, reinstall the repository's
-Surface UCM profile. The Surface card exposes one WSA macro with two WSA8845
-amplifiers; a second WSA macro sequence prevents the whole verb from loading.
+## Troubleshooting
 
-After installation, verify direct capture before debugging PipeWire:
+### Dummy Output after reboot
+
+- Confirm the installed topology matches the release hash:
+  `sha256sum /lib/firmware/qcom/x1e80100/X1E80100-Microsoft-Surface-Pro-11-tplg.bin`.
+- `sudo dmesg | grep -iE 'tplg|qcom-apm'` for topology load errors; the
+  boot-time opcode `0x1001021` is only the SPF readiness query, not a
+  playback-graph failure.
+- Confirm the UCM matcher selected the card:
+  `alsaucm -c hw:0 set _verb HiFi list _devices`.
+
+### PipeWire exits with status 234 in a crash loop
+
+A legacy `50-sp11-*.conf` workaround file survived the migration. Remove
+it (step 4) and restart the user audio services:
 
 ```bash
-arecord -D hw:0,3 -f S16_LE -r 48000 -c 2 -d 5 sp11-mic-test.wav
+systemctl --user restart pipewire pipewire-pulse wireplumber
 ```
 
-If the card retained its old `off` profile from an earlier failed UCM load,
-activate `HiFi` once and select the internal microphone source:
+### Volume-change pops after reboot
 
-```bash
-pactl set-card-profile alsa_card.platform-sound HiFi
-wpctl status
-wpctl set-default <internal-microphone-source-id>
-```
+The `soundwire_qcom.sp11_feedback_active_offset2_zero=1` boot parameter is
+missing from the kernel command line. The support flow adds it via
+`/etc/default/grub.d/99-surface-pro-11.cfg`; re-add it, then run
+`sudo update-grub && sudo /usr/local/sbin/sp11-grub-inject-dtb`.
 
-### Microphone works but has constant static
+## Rollback
 
-This is the current known limitation. The standard PipeWire source and direct
-ALSA capture both carry a persistent broadband static or scratching sound, and
-volume controls show input activity in a quiet room.
+Restore the files saved in step 2 from the backup directory, then reboot so
+the restored topology reloads at card probe. The previous kernel remains
+installed by design; select it from the GRUB advanced menu for a
+known-good fallback boot.
 
-Tests completed on the target device found:
+## Relationship to older audio lines
 
-- reducing `VA_DEC0 Volume` and `VA_DEC1 Volume` from +16 dB to 0 dB removed
-  full-scale clipping and made speech clearer, but did not remove the static;
-- DMIC0 was cleaner than DMIC1, while DMIC2 produced anomalous full-scale data
-  and DMIC3 was silent;
-- an 80 Hz high-pass plus 8 kHz low-pass filter improved measured noise and
-  voice clarity, but the static remained clearly audible; and
-- WebRTC noise suppression reduced the idle level but degraded speech quality
-  substantially, so it is not enabled by default.
-
-Do not interpret activity in a quiet room as proof that Firefox, PipeWire, or
-the desktop portal is creating the noise. The same behavior is present in raw
-ALSA capture.
-
-The 2.4 MHz DMIC clock is now the validated Surface Pro 11 default. The
-co-installable `7.1.3-jg-1dmic2p4-qcom-x1e` diagnostic kernel eliminated the continuous
-feedback/static heard with 4.8 MHz, made recorded speech dramatically clearer,
-and caused no audible degradation during music playback. Capture remains
-slightly tinny or thin. The kernel uses a Stubble-provided device tree embedded
-in the packaged image, so changing a loose DTB under `/boot` or the EFI System
-Partition does not change the live tree. See
-[ADR-0045](../adr/adr-0045-sp11-2p4mhz-dmic-clock-test-kernel.md) for the test
-build and [ADR-0046](../adr/adr-0046-sp11-default-2p4mhz-dmic-clock.md) for the
-default-setting decision and device-side evidence.
-
-For a new installation, use the experimental
-[`7.2-rc5-jg-0sp11v3` r1 kernel bundle](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-qcom-x1e-7.2-rc5-jg-0sp11v3-r1)
-with the
-[`sp11-audio-topology-v2` assets](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-audio-topology-v2).
-The v2 topology binary is unchanged from v1; v2 updates the UCM capture path to
-match the single WSA macro, use two microphone channels, and apply unity
-decoder gain. The kernel remains necessary because UCM changes alone do not
-alter the Denali DMIC clock. The v3 kernel retains the v2 build's validated
-2.4 MHz clock and adds the separately packaged, exact-ABI touchscreen module
-set. See [ADR-0048](../adr/adr-0048-jglathe-qcom-7-2-rc5-jg-0sp11v2-build.md)
-and [ADR-0049](../adr/adr-0049-sp11-7-2-rc5-jg-0sp11v3-touchscreen-build.md).
-
-The 7.2-rc5 SP11 v2 and v3 kernels boot with the 2.4 MHz clock through the
-GRUB-injected `/boot/sp11-denali.dtb` (unlike the 7.1.3 v2 kernel, which carried
-the device tree embedded in the packaged Stubble image). The installer prefers
-the newest numeric `sp11vN` build's DTB and injects it into every GRUB kernel
-entry, so the live device-tree value reflects the injected file:
-
-```bash
-uname -r
-od -An -tu4 -N4 --endian=big \
-  /sys/firmware/devicetree/base/soc@0/codec@6d44000/qcom,dmic-sample-rate
-```
-
-Expected output for the current bundle is
-`7.2-rc5-jg-0sp11v3-qcom-x1e` and `2400000`.
+- **CRD workaround stack (retired).** The CRD topology, OE-authored UCM,
+  manual PipeWire speaker sink, and WSA routing service were the original
+  bring-up path
+  ([ADR-0033](../adr/adr-0033-audio-topology-gap.md),
+  [ADR-0035](../adr/adr-0035-audio-boot-race-alsactl.md),
+  [ADR-0036](../adr/adr-0036-right-speaker-audio-position-reorder.md),
+  [ADR-0044](../adr/adr-0044-sp11-ucm-single-wsa-macro-microphone.md)).
+  ADR0064 retired this stack in favor of the paired releases.
+- **Golden v32 v9/v10 pairing (superseded for v12+).** Documented in
+  [`how-to-migrate-to-native-audio`](how-to-migrate-to-native-audio.md) and
+  [ADR-0062](../adr/adr-0062-sp11-7-2-0-jg-0sp11v9-golden-v32-audio-line.md).
+  Its topology defined no VA/DMIC capture graph, so the internal microphone
+  was unavailable on that line
+  ([issue #48](https://github.com/ooaklee/linux-surface-pro-11-oe/issues/48));
+  the v19c pairing restores it.
+- **DMIC clock.** The 2.4 MHz Denali DMIC clock remains the validated
+  default; 4.8 MHz causes continuous capture static
+  ([ADR-0045](../adr/adr-0045-sp11-2p4mhz-dmic-clock-test-kernel.md),
+  [ADR-0046](../adr/adr-0046-sp11-default-2p4mhz-dmic-clock.md)). Capture
+  remains slightly tinny or thin.
 
 ## References
 
-- ADR: [adr-0033-audio-topology-gap.md](../adr/adr-0033-audio-topology-gap.md)
-- ADR: [adr-0034-wsa2-regcache-right-speaker.md](../adr/adr-0034-wsa2-regcache-right-speaker.md)
-- ADR: [adr-0035-audio-boot-race-alsactl.md](../adr/adr-0035-audio-boot-race-alsactl.md)
-- ADR: [adr-0036-right-speaker-audio-position-reorder.md](../adr/adr-0036-right-speaker-audio-position-reorder.md)
-- ADR: [adr-0044-sp11-ucm-single-wsa-macro-microphone.md](../adr/adr-0044-sp11-ucm-single-wsa-macro-microphone.md)
-- ADR: [adr-0045-sp11-2p4mhz-dmic-clock-test-kernel.md](../adr/adr-0045-sp11-2p4mhz-dmic-clock-test-kernel.md)
-- ADR: [adr-0046-sp11-default-2p4mhz-dmic-clock.md](../adr/adr-0046-sp11-default-2p4mhz-dmic-clock.md)
-- ADR: [adr-0049-sp11-7-2-rc5-jg-0sp11v3-touchscreen-build.md](../adr/adr-0049-sp11-7-2-rc5-jg-0sp11v3-touchscreen-build.md)
-- Script: [sp11-audio-topology.sh](../../scripts/sp11-audio-topology.sh)
-- Script: [sp11-pipewire-speaker-sink.sh](../../scripts/sp11-pipewire-speaker-sink.sh)
-- Script: [sp11-enable-wsa-routing.sh](../../scripts/sp11-enable-wsa-routing.sh)
-- Script: [sp11-fix-audio-boot-race.sh](../../scripts/sp11-fix-audio-boot-race.sh)
-- Source: [linux-msm/audioreach-topology](https://github.com/linux-msm/audioreach-topology)
-- UCM configs: `/usr/share/alsa/ucm2/Qualcomm/x1e80100/`
-- PipeWire UCM issue: see ADR-0033 for tracking and workarounds
+- [ADR0064: Dedicated SP11 Audio Release Strategy](../adr/adr-0064-sp11-audio-release-strategy.md)
+- Kernel release: [sp11-qcom-x1e-7.2.0-jg-0sp11v12](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-qcom-x1e-7.2.0-jg-0sp11v12)
+- Audio release: [sp11-audio-v19c](https://github.com/ooaklee/linux-surface-pro-11-oe/releases/tag/sp11-audio-v19c)
+- [Install Surface Pro 11 Firmware](how-to-install-sp11-firmware.md)
+- [Publish the SP11 Audio Release](../../scripts/publish-sp11-audio-release.sh)
